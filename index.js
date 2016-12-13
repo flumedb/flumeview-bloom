@@ -3,8 +3,7 @@ var Drain = require('pull-stream/sinks/drain')
 var Once = require('pull-stream/sources/once')
 var AtomicFile = require('atomic-file')
 var path = require('path')
-var deepEqual = require('deep-equal')
-var Notify = require('pull-notify')
+var jsbloom = require('jsbloom')
 
 function isEmpty (o) {
   for(var k in o) return false
@@ -15,24 +14,30 @@ function isFunction (f) {
   return 'function' === typeof f
 }
 
-function id (e) { return e }
+function isString (s) {
+  return 'string' === typeof s
+}
 
-module.exports = function (version, reduce, map) {
+var codec = require('./codec')
+
+function lookup(map) {
+  if(isFunction(map)) return map
+  else if(isString(map)) return function (obj) { return obj[map] }
+  else return function (e) { return e }
+}
+
+module.exports = function (version, map, opts) {
+  opts = opts || {}
+  var items = opts.items || 100e3
+  var probability = opts.probability || 0.001
+
   if(isFunction(version))
     throw new Error('version must be a number')
 
-  map = map || id
-  var notify = Notify()
+  map = lookup(map)
   return function (log, name) { //name is where this view is mounted
     var acc, since = Obv(), ts = 0
     var value = Obv(), _value, writing = false, state, int
-
-    //if we are in sync, and have not written recently, then write the current state.
-
-    // if the log is persisted,
-    // then also save the reduce state.
-    // save whenever the view gets in sync with the log,
-    // as long as it hasn't beet updated in 1 minute.
 
     function write () {
       var _ts = Date.now()
@@ -40,7 +45,13 @@ module.exports = function (version, reduce, map) {
         clearTimeout(int)
         int = setTimeout(function () {
           ts = _ts; writing = true
-          state.set({seq: since.value, version: version, value: _value = value.value}, function () {
+          state.set({
+            seq: since.value,
+            version: version,
+            items: items,
+            probability: probability,
+            value: bloom
+          }, function () {
             writing = false
           })
         }, 200)
@@ -55,14 +66,22 @@ module.exports = function (version, reduce, map) {
 
     if(log.filename) {
       var dir = path.dirname(log.filename)
-      state = AtomicFile(path.join(dir, name+'.json'))
+      state = AtomicFile(path.join(dir, name+'.json'), codec)
       state.get(function (err, data) {
-        if(err || isEmpty(data)) since.set(-1)
-        else if(data.version !== version) {
+        if(err || isEmpty(data)) {
+          bloom = jsbloom.filter(opts.items || 100e3, opts.probability || 0.001)
+          since.set(-1)
+        }
+        else if( //if any settings have changed, reinitialize the filter.
+          data.version !== version
+        || data.items !== opts.items
+        || data.probabilty !== opts.probability
+      ) {
+          bloom = jsbloom.filter(opts.items || 100e3, opts.probability || 0.001)
           since.set(-1) //overwrite old data.
         }
         else {
-          value.set(_value = data.value)
+          bloom = data.value
           since.set(data.seq)
         }
       })
@@ -73,33 +92,23 @@ module.exports = function (version, reduce, map) {
     return {
       since: since,
       value: value,
-      methods: {get: 'async', stream: 'source'},
-      get: function (path, cb) {
-        if('function' === typeof path)
-          cb = path, path = null
-        cb(null, value.value)
-      },
-      stream: function (opts) {
-        opts = opts || {}
-        //todo: send the HASH of the value, and only resend it if it is different!
-        if(opts.live !== true)
-          return Once(value.value)
-        var source = notify.listen()
-        //start by sending the current value...
-        source.push(value.value)
-        return source
+      methods: {has: 'sync'},
+      //has checks immediately, but if you want to wait
+      //use db[name].ready(function () { db[name].has(key) })
+      //ready is added by flumedb
+      has: function (key) {
+        return bloom.checkEntry(key)
       },
       createSink: function (cb) {
         return Drain(function (data) {
-            var _data = map(data.value, data.seq)
-            if(_data != null) value.set(reduce(value.value, _data, data.seq))
-            since.set(data.seq)
-            notify(_data)
-            write()
+          var key = map(data.value, data.seq)
+          if(key) bloom.addEntry(key)
+          since.set(data.seq)
+          write()
         }, cb)
       },
       destroy: function (cb) {
-        value.set(null); since.set(-1);
+        bloom = null; since.set(-1);
         if(state) state.set(null, cb)
         else cb()
       },
@@ -107,10 +116,22 @@ module.exports = function (version, reduce, map) {
         clearTimeout(int)
         if(!since.value) return cb()
         //force a write.
-        state.set({seq: since.value, version: version, value: _value = value.value}, cb)
+        state.set({
+          seq: since.value,
+          version: version,
+          items: opts.items,
+          probability: opts.probability,
+          value: bloom
+        }, cb)
       }
     }
   }
 }
+
+
+
+
+
+
 
 

@@ -9,62 +9,61 @@ Stream append-only log data into a reduce function to calculate a state.
 var FlumeLog = require('flumelog-offset')
 var codec = require('flumecodec')
 var Flume = require('flumedb')
-var Reduce = require('flumeview-reduce')
-
-//statistics exports a reduce function that calculates
-//mean, stdev, etc!
-var statistics = require('statistics')
+var Bloom = require('flumeview-bloom')
 
 //initialize a flumelog with a codec.
 //this example uses flumelog-offset, but any flumelog is valid.
 var log = FlumeLog(file, 1024*16, codec.json) //use any flume log
 
 //attach the reduce function.
-var db = Flume(log).use('stats',
-    Reduce(1, statistics, function (data) {
-      return data.value
-    })
+var db = Flume(log).use('bloom', Bloom(1, 'key')
 
-db.append({value: 1}, function (err) {
-
-  db.stats.get(function (err, stats) {
-    console.log(stats) // => {mean: 1, stdev: 0, count: 1, sum: 1, ...}
+db.append({key: 1, value: 1}, function (err) {
+  db.bloom.ready(function (err, stats) {
+    console.log(db.bloom.has(1)) // ==> true
+    conosle.log(db.bloom.has(2)) // ==> false
   })
 })
 ```
 
-## FlumeViewReduce(version, reduce, map?) => FlumeView
+## FlumeViewBloom(version, map, opts) => FlumeView
 
 construct a flumeview from this reduce function. `version` should be a number,
-and must be provided. If you make a breaking change to either `reduce` or `map`
-then increment `version` and the view will be rebuilt.
+and must be provided. If you change `map`
+then increment `version` and the view will be rebuilt. Also, if any options change,
+the view will be rebuilt.
 
-`map` is optional. If map is applied, then each item in the log is passed to `map`
-and then if the returned value is not null, it is passed to reduce.
+`opts` provides options to the [bloom filter](https://github.com/cry/jsbloom) `items` and `probability`.
+default settings are `100,000` items and `0.001` probability of a collision.
 
-``` js
-var _data = map(data)
-if(_data != null)
-  state = reduce(state, map(data))
-```
+`map` is the key that is used to id each item. it can be a function that returns a string,
+or if it is a string then that property is taken from the item.
 
-using a `map` function is useful, because it enables efficiently streaming the realtime
-changes in the state to a remote client.
+## db[name].has(key) => boolean
 
-then, pass the flumeview to `db.use(name, flumeview)`
-and you'll have access to the flumeview methods on `db[name]...`
+check if an item with `key` is in the log.
+If the result is `false`, then the item is _not_ in the database, but if the result is `true`,
+then the item _might_ be in the database.
 
-## db[name].get(cb)
+## Uses
 
-get the current state of the reduce. This will wait until the view is up to date, if necessary.
+### cheaply enforce uniqueness
 
-## db[name].stream({live: boolean}) => PullSource
+Before adding something, check if you already have it.
+If the bloom filter does not have it, then we can add it without any other checks.
+But since bloom filters can give false positives, if it says yes, we need to check if it really
+is there. This will be a more expensive check, but we only need to do it if the bloom check fails.
 
-Stream the changing reduce state. for this to work, a map function must be provided.
+### estimating the number of unique values
 
-If so, the same reduce function can be used to process the output.
+By measuring the probability of a bloom filter match, we can get an estimate of the number of
+unique values added to the bloom filter. For example, unique visits to your website.
+This could also be used to track the how many possible values a field might have.
+
 
 ## License
 
 MIT
+
+
 
