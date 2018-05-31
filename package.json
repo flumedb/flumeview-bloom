@@ -1,11 +1,11 @@
 {
-  "name": "flumeview-reduce",
-  "description": "",
-  "version": "2.0.0",
-  "homepage": "https://github.com/dominictarr/flumeview-reduce",
+  "name": "flumeview-bloom",
+  "description": "bloom filter as a flumeview",
+  "version": "1.0.0",
+  "homepage": "https://github.com/dominictarr/flumeview-bloom",
   "repository": {
     "type": "git",
-    "url": "git://github.com/dominictarr/flumeview-reduce.git"
+    "url": "git://github.com/dominictarr/flumeview-bloom.git"
   },
   "dependencies": {
     "atomic-file": "^0.1.0",
